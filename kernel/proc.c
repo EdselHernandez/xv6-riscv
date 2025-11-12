@@ -7,11 +7,10 @@
 #include "defs.h"
 
 struct cpu cpus[NCPU];
-
+int mode = 0; //0 is run mode, 1 is debug mode
 struct proc proc[NPROC];
 
 struct proc *initproc;
-
 int nextpid = 1;
 struct spinlock pid_lock;
 
@@ -262,6 +261,7 @@ kfork(void)
   int i, pid;
   struct proc *np;
   struct proc *p = myproc();
+  
 
   // Allocate process.
   if((np = allocproc()) == 0){
@@ -289,7 +289,8 @@ kfork(void)
   np->cwd = idup(p->cwd);
 
   safestrcpy(np->name, p->name, sizeof(p->name));
-
+  np->priority = 10;
+  np->num_epoch_slots = 0;
   pid = np->pid;
 
   release(&np->lock);
@@ -436,14 +437,43 @@ scheduler(void)
     // and wfi.
     intr_on();
     intr_off();
+    int dom = 0;
+    
+    for(p = proc; p<&proc[NPROC];p++){
+          acquire(&p->lock);
+      if(p->state == RUNNABLE){
+        dom += (20-p->priority);
+      }
+      release(&p->lock);
+    }
+    
+    if(dom == 0){
+      continue;
+    }
 
-    int found = 0;
+    for(p = proc; p<&proc[NPROC];p++){
+            acquire(&p->lock);
+      if(p->state == RUNNABLE){
+        p->num_epoch_slots = 40 * (20 - p->priority)/dom;
+      }
+      release(&p->lock);
+    }
+    
+    if(mode == 1){
+      printf("-------New epoch-------\n");
+    }
+    
+        int found = 0;
     for(p = proc; p < &proc[NPROC]; p++) {
       acquire(&p->lock);
-      if(p->state == RUNNABLE) {
+      if(p->state == RUNNABLE && p->num_epoch_slots > 0) {
         // Switch to chosen process.  It is the process's job
         // to release its lock and then reacquire it
         // before jumping back to us.
+        if(mode == 1){
+          printf("PID %d running (priority %d), slots left %d\n", p->pid,p->priority,p->num_epoch_slots);
+        }
+        p->num_epoch_slots--;
         p->state = RUNNING;
         c->proc = p;
         swtch(&c->context, &p->context);
@@ -455,12 +485,15 @@ scheduler(void)
       }
       release(&p->lock);
     }
+   
     if(found == 0) {
       // nothing to run; stop running on this core until an interrupt.
       asm volatile("wfi");
     }
   }
+
 }
+
 
 // Switch to scheduler.  Must hold only p->lock
 // and have changed proc->state. Saves and restores
@@ -688,3 +721,58 @@ procdump(void)
     printf("\n");
   }
 }
+
+int priority_fork(int prio){
+  int i, pid;
+  struct proc *np;
+  struct proc *p = myproc();
+  
+
+  if(prio < 0 ||prio > 19){
+  return -1;
+  }
+  // Allocate process.
+  if((np = allocproc()) == 0){
+    return -1;
+  }
+
+  // Copy user memory from parent to child.
+  if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
+    freeproc(np);
+    release(&np->lock);
+    return -1;
+  }
+  np->sz = p->sz;
+
+  // copy saved user registers.
+  *(np->trapframe) = *(p->trapframe);
+
+  // Cause fork to return 0 in the child.
+  np->trapframe->a0 = 0;
+
+  // increment reference counts on open file descriptors.
+  for(i = 0; i < NOFILE; i++)
+    if(p->ofile[i])
+      np->ofile[i] = filedup(p->ofile[i]);
+  np->cwd = idup(p->cwd);
+
+  safestrcpy(np->name, p->name, sizeof(p->name));
+  np->priority = prio;
+  np->num_epoch_slots = 0;
+  pid = np->pid;
+
+  release(&np->lock);
+
+  acquire(&wait_lock);
+  np->parent = p;
+  release(&wait_lock);
+
+  acquire(&np->lock);
+  np->state = RUNNABLE;
+  release(&np->lock);
+
+  return pid;
+
+}
+
+

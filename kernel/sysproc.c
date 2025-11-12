@@ -6,7 +6,8 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "vm.h"
-
+extern int mode;//get the mode value from proc.c
+extern int priority_fork(int);//get the function from proc.c
 uint64
 sys_exit(void)
 {
@@ -107,3 +108,27 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+//our new sys_call
+uint64
+sys_debug(void){
+//set a variable "enable"
+  int enable;
+  argint(0,&enable);
+ 
+ 
+ if(enable < 0 || enable > 1){
+  return -1;
+ }
+ 
+ mode = enable;
+ return 0;
+}
+
+uint64
+sys_priority_fork(void){
+int prio;
+argint(0,&prio);
+return priority_fork(prio);
+}
+
